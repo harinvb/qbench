@@ -1,0 +1,30 @@
+[package]
+name = "qbench"
+version = "0.1.0"
+edition = "2021"
+authors = ["HariBabu Nalluri <harinvb@gmail.com>"]
+description = """A simple query benchmarking tool for SQL databases,
+specifically designed for checking performance between
+multiple versions of same query."""
+license = "MIT"
+
+[lib]
+name = "qbench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qbench"
+path = "src/bin/qbench.rs"
+
+[dependencies]
+anyhow = "1.0.71"
+async-std = { version = "1.12.0", features = ["attributes"] }
+async-trait = "0.1.68"
+clap = { version = "4.2.7", features = ["derive"] }
+futures = "0.3.28"
+glob = "0.3.1"
+serde = { version = "1.0.163", features = ["derive"] }
+sqlx = { version = "0.6.3", features = ["runtime-async-std-rustls", "all-databases"] }
+thiserror = "1.0.40"
+toml = "0.7.3"
+tui = "0.19.0"
