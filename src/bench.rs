@@ -1,14 +1,16 @@
 use std::cell::RefCell;
+use std::ops::DerefMut;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_std::prelude::StreamExt;
+use async_std::sync::{Arc, Mutex};
 use futures::stream::FuturesUnordered;
 use glob::glob_with;
-use sqlx::{Any, AnyPool, Pool, query};
+use sqlx::{Any, AnyPool, Pool, query, Transaction};
 use sqlx::any::AnyPoolOptions;
+use sqlx::migrate::Migrate;
 
 use crate::{BenchFailureResult, BenchSuccessResult, QueryBench, QueryBenchParser, QueryBenchResult, QueryBenchResults, QueryRevision, QueryRevisionResult};
 use crate::args::Args;
@@ -155,19 +157,16 @@ async fn run_query_bench(bench: &QueryBench, pool: &AnyPool, args: &Args) -> Res
 ///
 /// A Result containing a QueryRevisionResult indicating the success or failure of the benchmark operation.
 async fn run_revision_bench(query_revision: &QueryRevision, pool: &Pool<Any>, args: &Args) -> Result<QueryRevisionResult> {
-    let mut tx = pool.begin().await?; // begin a transaction
-
     let mut bench_success_res = BenchSuccessResult { // initialize a BenchSuccessResult with the default value and the name of the query revision
         revision_name: query_revision.name.clone(), // cloning the name to avoid borrowing issues
         ..Default::default()
     };
+    let tx = Arc::new(Mutex::new(pool.begin().await?)); // begin a transaction
 
     if let Some(pre_script) = &query_revision.pre_script { // if a pre_script is defined
-        let pre_script_start = Instant::now(); // note the time before executing the script
-        let pre_script_result = query(pre_script).execute(&mut tx).await; // execute the pre_script on the transaction
-        let pre_script_duration = pre_script_start.elapsed(); // calculate the duration of the pre_script execution
+        let pre_script_result = execute_script(pre_script, tx.clone()).await; // execute the pre_script
         match pre_script_result { // check the result of the pre_script execution
-            Ok(_) => bench_success_res.pre_script_duration = pre_script_duration, // if successful, record the duration in the BenchSuccessResult
+            Ok(duration) => bench_success_res.pre_script_duration = duration, // if successful, record the duration in the BenchSuccessResult
             Err(e) => return Ok(QueryRevisionResult::PreScriptFailure(BenchFailureResult { // if failed, return an error wrapped in a QueryRevisionResult indicating pre_script failure
                 revision_name: query_revision.name.clone(),
                 error: e.to_string(),
@@ -176,9 +175,12 @@ async fn run_revision_bench(query_revision: &QueryRevision, pool: &Pool<Any>, ar
     }
 
     let mut durations = vec![]; // initialize a vector of Duration to record the duration of each execution of the query
+
     for _ in 0..args.iterations { // iterate over the number of iterations specified in the Args
         let start = Instant::now(); // take note of the time before executing the query
-        let query_result = query(query_revision.query.as_str()).execute(&mut tx).await; // execute the query on the transaction
+        let mut lock = tx.lock().await; // lock the transaction
+        let query_result = query(query_revision.query.as_str()).execute(lock.deref_mut()).await; // execute the query on the transaction
+        lock.unlock(); // unlock the transaction
         match query_result {
             Ok(_) => {
                 durations.push(start.elapsed()); // if successful, record the duration in the vector
@@ -198,19 +200,53 @@ async fn run_revision_bench(query_revision: &QueryRevision, pool: &Pool<Any>, ar
     bench_success_res.avg_duration = bench_success_res.durations.iter().sum::<Duration>().div_f64(total); // calculate the average duration and add it to the BenchSuccessResult
 
     if let Some(post_script) = &query_revision.post_script { // if a post_script is defined
-        let post_script_start = Instant::now(); // note the time before executing the script
-        let post_script_result = query(post_script).execute(&mut tx).await; // execute the post_script on the transaction
-        let post_script_duration = post_script_start.elapsed(); // calculate the duration of the post_script execution
+        let post_script_result = execute_script(post_script, tx.clone()).await; // execute the post_script
         match post_script_result { // check the result of the post_script execution
-            Ok(_) => bench_success_res.post_script_duration = post_script_duration, // if successful, record the duration in the BenchSuccessResult
+            Ok(duration) => bench_success_res.post_script_duration = duration, // if successful, record the duration in the BenchSuccessResult
             Err(e) => return Ok(QueryRevisionResult::PostScriptFailure(BenchFailureResult { // if failed, return an error wrapped in a QueryRevisionResult indicating post_script failure
                 revision_name: query_revision.name.clone(),
                 error: e.to_string(),
             })),
         }
     }
-
-    tx.rollback().await?; // rollback the transaction
-
+    Arc::try_unwrap(tx).unwrap().into_inner().rollback().await?; // unwrap the transaction and rollback
     Ok(QueryRevisionResult::Success(bench_success_res)) // return a QueryRevisionResult indicating success and containing the BenchSuccessResult
 }
+
+/// This function extracts queries from a multi-line string and returns a vector of string slices.
+fn extract_multiline_queries(query_str: &str) -> Vec<&str> {
+    // Split the string using ';' as a delimiter and include the delimiter.
+    // Return an iterator and call map to trim each query of whitespace.
+    // Collect the results into a vector of string slices.
+    query_str.split_inclusive(';').map(|s| s.trim()).collect()
+}
+
+/// This function executes a script against a database connection pool and returns the duration it took to run.
+///
+/// # Arguments
+///
+/// * `script` - A reference to a string containing the script to be executed.
+/// * `tx` - An atomic reference-counted mutex wrapping a database transaction.
+///
+/// # Returns
+///
+/// The duration it took to execute the script, wrapped in a `Result` object.
+///
+async fn execute_script(script: &str, tx: Arc<Mutex<Transaction<'_, Any>>>) -> Result<Duration> {
+    // Start timing the script execution.
+    let start = Instant::now();
+
+    // For each query extracted from the script, execute it against the database within the transaction.
+    for script_line in extract_multiline_queries(script) {
+        let mut lock = tx.lock().await; // Lock the database transaction.
+        let _ = query(script_line).execute(lock.deref_mut()).await?; // Execute the query.
+        lock.unlock(); // Unlock the database transaction.
+    }
+
+    // Calculate the duration of the script execution.
+    let duration = start.elapsed();
+
+    // Return the duration of the script execution.
+    Ok(duration)
+}
+
