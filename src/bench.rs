@@ -1,16 +1,17 @@
 use std::cell::RefCell;
 use std::ops::DerefMut;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
 use anyhow::Result;
-use async_std::prelude::StreamExt;
-use async_std::sync::{Arc, Mutex};
 use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use glob::glob_with;
 use sqlx::{Any, AnyPool, Pool, query, Transaction};
 use sqlx::any::AnyPoolOptions;
 use sqlx::migrate::Migrate;
+use tokio::sync::Mutex;
+use tokio::time::{Duration, Instant};
 
 use crate::{BenchFailureResult, BenchSuccessResult, QueryBench, QueryBenchParser, QueryBenchResult, QueryBenchResults, QueryRevision, QueryRevisionResult};
 use crate::args::Args;

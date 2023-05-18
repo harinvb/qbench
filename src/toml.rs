@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
-use async_std::fs::read_to_string;
+use tokio::fs::read_to_string;
 
 use crate::{QueryBenches, QueryBenchParser};
 
