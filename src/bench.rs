@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use clap::Parser;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use glob::glob_with;
-use sqlx::{Any, AnyPool, Pool, query, Transaction};
+use sqlx::{Any, AnyPool, query, Transaction};
 use sqlx::any::AnyPoolOptions;
 use sqlx::migrate::Migrate;
 use tokio::sync::Mutex;
@@ -16,238 +17,415 @@ use tokio::time::{Duration, Instant};
 use crate::{BenchFailureResult, BenchSuccessResult, QueryBench, QueryBenchParser, QueryBenchResult, QueryBenchResults, QueryRevision, QueryRevisionResult};
 use crate::args::Args;
 use crate::toml::TomlParser;
+use crate::util::extract_multiline_queries;
 
-/// Run a benchmark with the given arguments.
-pub async fn run_bench(args: &Args) -> Result<QueryBenchResults> {
-    // Get all files that match the pattern
-    let files: Vec<PathBuf> = get_files_matching_pattern(args).await?;
-    // Create a parser instance to parse TOML configuration files
-    let parser = Arc::new(RefCell::from(TomlParser::new()));
-    // Create tasks to parse each file in parallel
-    let mut file_parsing_tasks = FuturesUnordered::new();
-    for file in files {
-        let parser = parser.clone();
-        file_parsing_tasks.push(async move {
-            parser.borrow().parse(&file).await
-        });
-    }
-    // Collect the query benchmarks from the parsed files
-    let mut query_benches = vec![];
-    while let Some(query_bench) = file_parsing_tasks.next().await {
-        match query_bench {
-            Ok(mut query_bench) => query_benches.append(&mut query_bench.queries),
-            Err(e) => println!("{}", e), // Print error message if there was an error parsing a file
-        }
-    }
-    // Create a database connection pool
-    let pool = AnyPoolOptions::new().max_connections(args.max_connections).connect(&args.url).await?;
-    // Create tasks to run each query benchmark in parallel
-    let mut query_bench_tasks = FuturesUnordered::new();
-    for bench in query_benches {
-        let pool = pool.clone();
-        query_bench_tasks.push(async move {
-            run_query_bench(&bench, &pool, args).await
-        });
-    }
-    // Collect the results of all query benchmarks
-    let mut results = vec![];
-    while let Some(result) = query_bench_tasks.next().await {
-        match result {
-            Ok(result) => results.push(result),
-            Err(e) => println!("{}", e), // Print error message if there was an error running a query benchmark
-        }
-    }
-
-    // Return the query benchmark results
-    Ok(QueryBenchResults { results })
-}
-
-/// Asynchronously finds files matching a pattern in a directory using glob.
-///
-/// # Arguments
-///
-/// * `args` - A reference to a struct containing the search directory and the search pattern.
-///
-/// # Returns
-///
-/// A `Result` containing a vector of `PathBuf` of files matching the provided pattern.
-///
-/// # Example
-///
-/// ```rust
-/// use my_crate::args::Args;
-/// use my_crate::file_utils::get_files_matching_pattern;
-/// use qbench::args::Args;
-/// use clap::Parser;
-///
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let args = Args::parse()?;
-///     let files = get_files_matching_pattern(&args).await?;
-///     println!("{:?}", files);
-///     Ok(())
-/// }
-/// ```
-async fn get_files_matching_pattern(args: &Args) -> Result<Vec<PathBuf>> {
-    // Create glob match options, making it case-insensitive by default.
-    let glob_options = glob::MatchOptions {
-        case_sensitive: false,
-        ..Default::default()
-    };
-
-    // Use glob to find files matching the provided pattern in the provided directory.
-    Ok(glob_with(
-        // Format the search directory and pattern into a single string and convert it to a `&str`.
-        format!("{}/{}", args.dir.to_str().unwrap_or("./"), args.pattern).as_ref(),
-        glob_options, // Pass the glob match options.
-    )?
-        .flatten() // Flatten the glob iterator into a vector of `Result`s.
-        .filter(|f| f.is_file()) // Filter out directories and other non-files.
-        .collect()) // Collect the remaining `PathBuf`s into a vector and return it as a `Result`.
+#[derive(Debug, Clone)]
+pub struct QBench {
+    pool: AnyPool,
+    pub args: Arc<Args>,
+    pub display_progress: bool,
 }
 
 
-/// Runs a benchmark on multiple revisions of a query.
-/// Returns the results of each revision as a `QueryBenchResult`.
-///
-/// # Arguments
-///
-/// * `bench` - The query bench to run.
-/// * `pool` - The database connection pool to use.
-/// * `args` - Additional arguments for the benchmark.
-///
-/// # Returns
-///
-/// * `Result<QueryBenchResult>` - A tuple containing the benchmark name and its results.
-async fn run_query_bench(bench: &QueryBench, pool: &AnyPool, args: &Args) -> Result<QueryBenchResult> {
-    // Create a new unordered collection of futures for the sub-benchmarks.
-    let mut sub_bench_tasks = FuturesUnordered::new();
-    // For each revision in the query bench...
-    for revision in &bench.revisions {
-        // Clone the connection pool.
-        let pool = pool.clone();
-        // Push a future onto the task list that runs the sub-benchmark.
-        sub_bench_tasks.push(async move {
-            run_revision_bench(revision, &pool, args).await
-        });
+impl QBench {
+
+    /// Create a new instance of `Self` struct, which holds a connection pool and `Args` configuration arguments.
+    ///
+    /// # Arguments
+    ///
+    /// * `args` - `Args` type representing the application's configuration arguments.
+    /// * `display_progress` - `bool` type which determines whether to display progress or not while connecting to the database.
+    ///
+    /// # Example
+    /// ```rust
+    /// use clap::Parser;
+    /// use qbench::args::Args;
+    /// let args = Args::parse();
+    /// async {
+    ///     let db = Self::new(args, true).await.unwrap();
+    /// }
+    /// ```
+    pub async fn new(args: Args, display_progress: bool) -> Result<Self> {
+        //Create a connection pool with maximum connections passed from args and connect to the database.
+        let pool = AnyPoolOptions::new().max_connections(args.max_connections).connect(&args.url).await?;
+        //Return a new instance of Self struct.
+        Ok(Self {
+            pool,
+            args: Arc::new(args),
+            display_progress,
+        })
     }
-    // Collect the results of each sub-benchmark.
-    let mut results = vec![];
-    while let Some(result) = sub_bench_tasks.next().await {
-        match result {
-            // If the sub-benchmark was successful, add it to the list of results.
-            Ok(result) => results.push(result),
-            // If an error occurred, print it and continue with the next sub-benchmark.
-            Err(e) => println!("{}", e),
+
+
+    /// Creates a new instance of the struct with default configuration.
+    ///
+    /// This function parses the command-line arguments and creates a new instance of the struct
+    /// with default configuration. It returns a Result that contains either the new instance or
+    /// an error if an error occurs.
+    ///
+    /// # Examples:
+    ///
+    /// ```rust
+    /// # use crate::MyStruct;
+    /// #
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let my_struct = MyStruct::default().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn default() -> Result<Self> {
+        // Parse command line arguments
+        let args = Args::parse();
+
+        // Create new instance with default configuration
+        Self::new(args, true).await
+    }
+
+
+    /// Runs query benchmarks.
+    ///
+    /// This function:
+    ///
+    /// 1. Gets the files matching the pattern
+    /// 2. Parses the files using a `TomlParser`
+    /// 3. Executes benchmark tasks for each query
+    /// 4. Returns the results of the query benchmarks as a `QueryBenchResults`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qbench::QueryBench;
+    /// use std::env::Args;
+    /// #[tokio::main]
+    /// async fn main() {
+    ///     let mut bench = QueryBench::new(Args::parse(),true).await?
+    ///     .run_bench().await?;
+    ///     let results = bench.run_bench().await.unwrap();
+    ///     println!("{:?}", results);
+    /// }
+    /// ```
+    pub async fn run_bench(&mut self) -> Result<QueryBenchResults> {
+        // Get files that match the pattern
+        let files: Vec<PathBuf> = self.get_files_matching_pattern().await?;
+
+        // Initialize parser
+        let parser = Arc::new(RefCell::from(TomlParser::new()));
+
+        // Create a task for parsing each file
+        let mut file_parsing_tasks = FuturesUnordered::new();
+        for file in files {
+            let parser = parser.clone();
+            file_parsing_tasks.push(async move {
+                parser.borrow().parse(&file).await
+            });
         }
-    }
-    // Return the name of the query bench and its results.
-    Ok(QueryBenchResult { name: bench.name.clone(), revision_result: results })
-}
 
-
-/// Benchmark a query revision using the provided arguments.
-///
-/// # Arguments
-///
-/// * `query_revision` - The `QueryRevision` to be benchmarked.
-/// * `pool` - An instance of `any_pool::Pool` for executing queries.
-/// * `args` - An instance of `Args` containing the benchmarking arguments.
-///
-/// # Returns
-///
-/// A Result containing a QueryRevisionResult indicating the success or failure of the benchmark operation.
-async fn run_revision_bench(query_revision: &QueryRevision, pool: &Pool<Any>, args: &Args) -> Result<QueryRevisionResult> {
-    let mut bench_success_res = BenchSuccessResult { // initialize a BenchSuccessResult with the default value and the name of the query revision
-        revision_name: query_revision.name.clone(), // cloning the name to avoid borrowing issues
-        ..Default::default()
-    };
-    let tx = Arc::new(Mutex::new(pool.begin().await?)); // begin a transaction
-
-    if let Some(pre_script) = &query_revision.pre_script { // if a pre_script is defined
-        let pre_script_result = execute_script(pre_script, tx.clone()).await; // execute the pre_script
-        match pre_script_result { // check the result of the pre_script execution
-            Ok(duration) => bench_success_res.pre_script_duration = duration, // if successful, record the duration in the BenchSuccessResult
-            Err(e) => return Ok(QueryRevisionResult::PreScriptFailure(BenchFailureResult { // if failed, return an error wrapped in a QueryRevisionResult indicating pre_script failure
-                revision_name: query_revision.name.clone(),
-                error: e.to_string(),
-            })),
-        }
-    }
-
-    let mut durations = vec![]; // initialize a vector of Duration to record the duration of each execution of the query
-
-    for _ in 0..args.iterations { // iterate over the number of iterations specified in the Args
-        let start = Instant::now(); // take note of the time before executing the query
-        let mut lock = tx.lock().await; // lock the transaction
-        let query_result = query(query_revision.query.as_str()).execute(lock.deref_mut()).await; // execute the query on the transaction
-        lock.unlock(); // unlock the transaction
-        match query_result {
-            Ok(_) => {
-                durations.push(start.elapsed()); // if successful, record the duration in the vector
+        // Combine queries from each parsed file
+        let mut query_benches = vec![];
+        while let Some(query_bench) = file_parsing_tasks.next().await {
+            match query_bench {
+                Ok(mut query_bench) => query_benches.append(&mut query_bench.queries),
+                Err(e) => println!("{}", e),
             }
-            Err(e) => {
-                return Ok(QueryRevisionResult::Failure(BenchFailureResult { // if failed, return an error wrapped in a QueryRevisionResult indicating query failure
-                    revision_name: query_revision.name.clone(),
-                    error: e.to_string(),
-                }));
+        }
+
+        // Create a task for each query benchmark
+        let mut query_bench_tasks = FuturesUnordered::new();
+        for bench in query_benches {
+            let mut self_clone = self.clone();
+            query_bench_tasks.push(async move {
+                self_clone.run_query_bench(&bench).await
+            });
+        }
+
+        // Collect the results from all query benchmarks
+        let mut results = vec![];
+        while let Some(result) = query_bench_tasks.next().await {
+            match result {
+                Ok(result) => results.push(result),
+                Err(e) => println!("{}", e),
             }
+        }
+
+        // Return the query benchmark results
+        Ok(QueryBenchResults { results })
+    }
+
+
+    /// Asynchronously gets a list of files matching a specific glob pattern within a directory.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    /// use qbench::args::Args;
+    ///
+    /// async fn example() {
+    ///   let path = PathBuf::from("./examples");
+    ///   let args = Args {
+    ///     url: "postgres://user:password@localhost:5432/postgres".to_string(),
+    ///     dir: PathBuf::from("./examples"),
+    ///     pattern: "*.rs".to_string(),
+    ///     max_connections: 10,
+    ///     iterations: 10,
+    /// };
+    ///   let result = get_files_matching_pattern(&args).await;
+    ///   assert!(result.is_ok());
+    ///   let files = result.unwrap();
+    ///   assert!(files.len() > 0);
+    /// }
+    /// ```
+    async fn get_files_matching_pattern(&self) -> Result<Vec<PathBuf>> {
+        // Define case insensitive matching options as default
+        let glob_options = glob::MatchOptions {
+            case_sensitive: false,
+            ..Default::default()
         };
+        // Clone the arguments and get the directory path
+        let args = self.args.clone();
+        let dir = args.dir.to_str().unwrap_or("./");
+
+        // Generate the glob pattern from the directory and file pattern
+        let pattern = args.pattern.clone();
+        let glob_path = format!("{}/{}", dir, pattern);
+
+        // Use `glob_with` to fetch all the files that match the pattern
+        Ok(glob_with(glob_path.as_ref(), glob_options)?
+            .flatten()
+            .filter(|f| f.is_file())
+            .collect())
     }
 
-    bench_success_res.durations = durations; // record the vector of durations in the BenchSuccessResult
 
-    let total = bench_success_res.durations.len() as f64; // calculate the total number of executions
-    bench_success_res.avg_duration = bench_success_res.durations.iter().sum::<Duration>().div_f64(total); // calculate the average duration and add it to the BenchSuccessResult
+    /// Runs query benchmark for given QueryBench, running benchmarks for each revision of query.
+    ///
+    /// # Arguments
+    ///
+    /// * `self` - A mutable reference to the current instance of struct implementing QueryRunner trait.
+    /// * `bench` - A reference to the QueryBench for which benchmark should be run.
+    ///
+    /// # Returns
+    ///
+    /// A Result containing QueryBenchResult on success and corresponding error message on failure.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use futures::executor::block_on;
+    ///
+    /// let mut runner = MyQueryRunner::new();
+    /// let result = block_on(runner.run_query_bench(&bench));
+    /// ```
+    async fn run_query_bench(&mut self, bench: &QueryBench) -> Result<QueryBenchResult> {
+        // Create a new instance of FuturesUnordered to store sub-task of revision benchmarking.
+        let mut sub_bench_tasks = FuturesUnordered::new();
 
-    if let Some(post_script) = &query_revision.post_script { // if a post_script is defined
-        let post_script_result = execute_script(post_script, tx.clone()).await; // execute the post_script
-        match post_script_result { // check the result of the post_script execution
-            Ok(duration) => bench_success_res.post_script_duration = duration, // if successful, record the duration in the BenchSuccessResult
-            Err(e) => return Ok(QueryRevisionResult::PostScriptFailure(BenchFailureResult { // if failed, return an error wrapped in a QueryRevisionResult indicating post_script failure
-                revision_name: query_revision.name.clone(),
-                error: e.to_string(),
-            })),
+        // Iterate through all the revisions in QueryBench and push them into sub_bench_tasks.
+        for revision in &bench.revisions {
+            // Clone the current instance of struct implementing QueryRunner trait.
+            let mut self_clone = self.clone();
+
+            // Create a new async block with move closure, passing the cloned instance of struct.
+            sub_bench_tasks.push(async move {
+                // Call run_revision_bench on cloned struct instance for current revision of benchmark.
+                self_clone.run_revision_bench(revision).await
+            });
         }
-    }
-    Arc::try_unwrap(tx).unwrap().into_inner().rollback().await?; // unwrap the transaction and rollback
-    Ok(QueryRevisionResult::Success(bench_success_res)) // return a QueryRevisionResult indicating success and containing the BenchSuccessResult
-}
 
-/// This function extracts queries from a multi-line string and returns a vector of string slices.
-fn extract_multiline_queries(query_str: &str) -> Vec<&str> {
-    // Split the string using ';' as a delimiter and include the delimiter.
-    // Return an iterator and call map to trim each query of whitespace.
-    // Collect the results into a vector of string slices.
-    query_str.split_inclusive(';').map(|s| s.trim()).collect()
-}
+        // Vector to store QueryBenchResult for each revision.
+        let mut results = vec![];
 
-/// This function executes a script against a database connection pool and returns the duration it took to run.
-///
-/// # Arguments
-///
-/// * `script` - A reference to a string containing the script to be executed.
-/// * `tx` - An atomic reference-counted mutex wrapping a database transaction.
-///
-/// # Returns
-///
-/// The duration it took to execute the script, wrapped in a `Result` object.
-///
-async fn execute_script(script: &str, tx: Arc<Mutex<Transaction<'_, Any>>>) -> Result<Duration> {
-    // Start timing the script execution.
-    let start = Instant::now();
+        // Loop through all the completed sub_bench_tasks until no task remains.
+        while let Some(result) = sub_bench_tasks.next().await {
+            match result {
+                Ok(result) => results.push(result),
+                Err(e) => println!("{}", e),
+            }
+        }
 
-    // For each query extracted from the script, execute it against the database within the transaction.
-    for script_line in extract_multiline_queries(script) {
-        let mut lock = tx.lock().await; // Lock the database transaction.
-        let _ = query(script_line).execute(lock.deref_mut()).await?; // Execute the query.
-        lock.unlock(); // Unlock the database transaction.
+        // Return QueryBenchResult with name of bench and results for each revision.
+        Ok(QueryBenchResult { name: bench.name.clone(), revision_result: results })
     }
 
-    // Calculate the duration of the script execution.
-    let duration = start.elapsed();
 
-    // Return the duration of the script execution.
-    Ok(duration)
+    /// Asynchronously runs benchmark for the provided revision of the query.
+    ///
+    /// # Arguments
+    ///
+    /// * `query_revision` - A reference to the query revision for which to run the benchmark.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `QueryRevisionResult` enum variant `Success` with the result of the successful benchmark.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use my_crud_library::{QBench, QueryRevision};
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> anyhow::Result<()> {
+    /// use qbench::bench::QBench;
+    /// use qbench::QueryRevision;
+    /// let mut qbench = QBench::default().await?;
+    ///
+    /// let query_revision = QueryRevision {
+    ///     name: "test_query".to_string(),
+    ///     query: "SELECT * FROM users WHERE email = 'johndoe@example.com'".to_string(),
+    ///     pre_script: None,
+    ///     post_script: None,
+    /// };
+    ///
+    /// let result = qbench.run_revision_bench(&query_revision).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn run_revision_bench(&mut self, query_revision: &QueryRevision) -> Result<QueryRevisionResult> {
+        // Create a new bench_success_res with the revision name and default values for the rest of the fields
+        let mut bench_success_res = BenchSuccessResult {
+            revision_name: query_revision.name.clone(),
+            ..Default::default()
+        };
+
+        // Clone the connection pool
+        let pool = self.pool.clone();
+
+        // Create a new Arc<Mutex<_>> wrapping a transaction and clone it
+        let tx = Arc::new(Mutex::new(pool.begin().await?));
+
+        // If there is a pre_script, execute it and measure its duration
+        if let Some(pre_script) = &query_revision.pre_script {
+            let pre_script_result = QBench::execute_script(pre_script, tx.clone()).await;
+            match pre_script_result {
+                Ok(duration) => bench_success_res.pre_script_duration = duration,
+                Err(e) => {
+                    return Ok(QueryRevisionResult::PreScriptFailure(BenchFailureResult {
+                        revision_name: query_revision.name.clone(),
+                        error: e.to_string(),
+                    }));
+                }
+            };
+        }
+
+        // Create a vector to store the durations of each iteration
+        let mut durations = vec![];
+
+        // Run the benchmark for the specified number of iterations
+        for _ in 0..self.args.iterations {
+            let start = Instant::now();
+
+            // Lock the transaction and execute the query
+            let mut lock = tx.lock().await;
+            let query_result = query(query_revision.query.as_str())
+                .execute(lock.deref_mut())
+                .await;
+
+            // Release the lock
+            lock.unlock();
+
+            // If the query was successful, push the duration to `durations`
+            // Otherwise, return a BenchFailureResult with the error message
+            match query_result {
+                Ok(_) => {
+                    durations.push(start.elapsed());
+                }
+                Err(e) => {
+                    return Ok(QueryRevisionResult::Failure(BenchFailureResult {
+                        revision_name: query_revision.name.clone(),
+                        error: e.to_string(),
+                    }));
+                }
+            };
+        }
+
+        // Save the durations to `bench_success_res`
+        bench_success_res.durations = durations;
+
+        // Calculate the average duration and save it to `bench_success_res`
+        let total = bench_success_res.durations.len() as f64;
+        bench_success_res.avg_duration = bench_success_res.durations.iter().sum::<Duration>().div_f64(total);
+
+        // If there is a post_script, execute it and measure its duration
+        if let Some(post_script) = &query_revision.post_script {
+            let post_script_result = QBench::execute_script(post_script, tx.clone()).await;
+            match post_script_result {
+                Ok(duration) => bench_success_res.post_script_duration = duration,
+                Err(e) => {
+                    return Ok(QueryRevisionResult::PostScriptFailure(BenchFailureResult {
+                        revision_name: query_revision.name.clone(),
+                        error: e.to_string(),
+                    }));
+                }
+            };
+        }
+
+        // Rollback the transaction and return the successful result
+        Arc::try_unwrap(tx)
+            .unwrap()
+            .into_inner()
+            .rollback()
+            .await?;
+
+        Ok(QueryRevisionResult::Success(bench_success_res))
+    }
+
+
+    /// Executes a given SQL script in a transaction and returns the execution duration.
+    ///
+    /// # Arguments
+    ///
+    /// * `script` - A string slice that represents the SQL script to execute.
+    /// * `tx` - An `Arc<Mutex<Transaction<'_, Any>>>` that represents the transaction lock to use
+    ///          for executing the script.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    /// use sqlx::{Any, query, Transaction};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let db_url = "sqlite::memory:";
+    ///     let pool = sqlx::any::AnyPoolOptions::new().connect(db_url).await?;
+    ///     let mut tx = pool.begin().await?;
+    ///
+    ///     let script = "
+    ///         CREATE TABLE users (
+    ///             id INTEGER PRIMARY KEY,
+    ///             name TEXT NOT NULL
+    ///         );
+    ///
+    ///         INSERT INTO users (name) VALUES ('John Doe');
+    ///     ";
+    ///
+    ///     let duration = execute_script(script, Arc::new(Mutex::new(tx))).await?;
+    ///
+    ///     println!("Execution Duration: {:?}", duration);
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    async fn execute_script(script: &str, tx: Arc<Mutex<Transaction<'_, Any>>>) -> Result<Duration> {
+        // Record the start time of the function execution.
+        let start = Instant::now();
+
+        // Split the given script into individual queries and execute each query in a transaction
+        // lock.
+        for script_line in extract_multiline_queries(script) {
+            let mut lock = tx.lock().await;
+            let _ = query(script_line)
+                .execute(lock.deref_mut())
+                .await?;
+
+            // Unlock the transaction lock.
+            lock.unlock();
+        }
+
+        // Compute the duration of the function execution.
+        let duration = start.elapsed();
+
+        // Return the function execution duration.
+        Ok(duration)
+    }
 }
-

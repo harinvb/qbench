@@ -2,12 +2,16 @@ use anyhow::Result;
 use clap::Parser;
 
 use qbench::args::Args;
-use qbench::bench::run_bench;
+use qbench::bench::QBench;
+use qbench::QueryBenchResults;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
-    let results = run_bench(&args).await?;
+    let results: QueryBenchResults = QBench::new(Args::parse(),
+                                                 true)
+        .await?
+        .run_bench()
+        .await?;
     //TODO: print results to terminal using some TUI library
     println!("{:#?}", results);
     Ok(())

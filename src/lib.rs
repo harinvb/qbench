@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub mod args;
 pub mod bench;
 pub mod toml;
+pub(crate) mod util;
 
 // Define a struct to hold multiple QueryBenchResult instances.
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone, Default)]
