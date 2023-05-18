@@ -1,0 +1,22 @@
+[[queries]]
+name = "test"
+
+[[queries.revisions]]
+name = "1.0.0"
+query = '''
+SELECT id,name FROM test where name like '%foo%';
+'''
+pre_script = '''
+CREATE TABLE test (id BIGSERIAL PRIMARY KEY, name TEXT);
+'''
+post_script = '''
+DROP TABLE test;
+'''
+
+[[queries.revisions]]
+name = "2.0.0"
+query = "SELECT id,name FROM test where name like '%foo%';"
+pre_script = '''
+CREATE TABLE test (id BIGSERIAL PRIMARY KEY, name VARCHAR);
+'''
+post_script = "DROP TABLE test;"
