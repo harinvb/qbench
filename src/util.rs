@@ -1,5 +1,3 @@
-
-
 /// Extracts multiple queries from a given string, separated by semicolons
 ///
 /// # Examples

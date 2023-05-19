@@ -3,21 +3,21 @@ use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use glob::glob_with;
-use sqlx::{Any, AnyPool, query, Transaction};
 use sqlx::any::AnyPoolOptions;
 use sqlx::migrate::Migrate;
+use sqlx::{query, Any, AnyPool, Transaction};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
-use crate::{BenchFailureResult, BenchSuccessResult, QueryBench, QueryBenchParser, QueryBenchResult, QueryBenchResults, QueryRevision, QueryRevisionResult};
 use crate::args::Args;
 use crate::toml::TomlParser;
 use crate::util::extract_multiline_queries;
+use crate::{QueryBench, QueryBenchParser, QueryBenchResult, QueryRevision, QueryRevisionResult};
 
 #[derive(Debug, Clone)]
 pub struct QBench {
@@ -26,9 +26,7 @@ pub struct QBench {
     pub display_progress: bool,
 }
 
-
 impl QBench {
-
     /// Create a new instance of `Self` struct, which holds a connection pool and `Args` configuration arguments.
     ///
     /// # Arguments
@@ -47,7 +45,10 @@ impl QBench {
     /// ```
     pub async fn new(args: Args, display_progress: bool) -> Result<Self> {
         //Create a connection pool with maximum connections passed from args and connect to the database.
-        let pool = AnyPoolOptions::new().max_connections(args.max_connections).connect(&args.url).await?;
+        let pool = AnyPoolOptions::new()
+            .max_connections(args.max_connections)
+            .connect(&args.url)
+            .await?;
         //Return a new instance of Self struct.
         Ok(Self {
             pool,
@@ -55,7 +56,6 @@ impl QBench {
             display_progress,
         })
     }
-
 
     /// Creates a new instance of the struct with default configuration.
     ///
@@ -81,7 +81,6 @@ impl QBench {
         Self::new(args, true).await
     }
 
-
     /// Runs query benchmarks.
     ///
     /// This function:
@@ -104,7 +103,7 @@ impl QBench {
     ///     println!("{:?}", results);
     /// }
     /// ```
-    pub async fn run_bench(&mut self) -> Result<QueryBenchResults> {
+    pub async fn run_bench(&mut self) -> Result<Vec<QueryBenchResult>> {
         // Get files that match the pattern
         let files: Vec<PathBuf> = self.get_files_matching_pattern().await?;
 
@@ -115,42 +114,30 @@ impl QBench {
         let mut file_parsing_tasks = FuturesUnordered::new();
         for file in files {
             let parser = parser.clone();
-            file_parsing_tasks.push(async move {
-                parser.borrow().parse(&file).await
-            });
+            file_parsing_tasks.push(async move { parser.borrow().parse(&file).await });
         }
 
         // Combine queries from each parsed file
         let mut query_benches = vec![];
         while let Some(query_bench) = file_parsing_tasks.next().await {
-            match query_bench {
-                Ok(mut query_bench) => query_benches.append(&mut query_bench.queries),
-                Err(e) => println!("{}", e),
-            }
+            query_benches.append(&mut query_bench?.queries)
         }
 
         // Create a task for each query benchmark
         let mut query_bench_tasks = FuturesUnordered::new();
         for bench in query_benches {
             let mut self_clone = self.clone();
-            query_bench_tasks.push(async move {
-                self_clone.run_query_bench(&bench).await
-            });
+            query_bench_tasks.push(async move { self_clone.run_query_bench(&bench).await });
         }
 
         // Collect the results from all query benchmarks
         let mut results = vec![];
         while let Some(result) = query_bench_tasks.next().await {
-            match result {
-                Ok(result) => results.push(result),
-                Err(e) => println!("{}", e),
-            }
+            results.push(result?);
         }
-
         // Return the query benchmark results
-        Ok(QueryBenchResults { results })
+        Ok(results)
     }
-
 
     /// Asynchronously gets a list of files matching a specific glob pattern within a directory.
     ///
@@ -196,7 +183,6 @@ impl QBench {
             .collect())
     }
 
-
     /// Runs query benchmark for given QueryBench, running benchmarks for each revision of query.
     ///
     /// # Arguments
@@ -239,14 +225,20 @@ impl QBench {
         while let Some(result) = sub_bench_tasks.next().await {
             match result {
                 Ok(result) => results.push(result),
-                Err(e) => println!("{}", e),
+                Err(e) => {
+                    return Err(
+                        e.context(format!("Error running benchmark for query {}", bench.name))
+                    );
+                }
             }
         }
 
         // Return QueryBenchResult with name of bench and results for each revision.
-        Ok(QueryBenchResult { name: bench.name.clone(), revision_result: results })
+        Ok(QueryBenchResult {
+            name: bench.name.clone(),
+            results,
+        })
     }
-
 
     /// Asynchronously runs benchmark for the provided revision of the query.
     ///
@@ -280,9 +272,12 @@ impl QBench {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn run_revision_bench(&mut self, query_revision: &QueryRevision) -> Result<QueryRevisionResult> {
+    pub async fn run_revision_bench(
+        &mut self,
+        query_revision: &QueryRevision,
+    ) -> Result<QueryRevisionResult> {
         // Create a new bench_success_res with the revision name and default values for the rest of the fields
-        let mut bench_success_res = BenchSuccessResult {
+        let mut bench_success_res = QueryRevisionResult {
             revision_name: query_revision.name.clone(),
             ..Default::default()
         };
@@ -295,16 +290,14 @@ impl QBench {
 
         // If there is a pre_script, execute it and measure its duration
         if let Some(pre_script) = &query_revision.pre_script {
-            let pre_script_result = QBench::execute_script(pre_script, tx.clone()).await;
-            match pre_script_result {
-                Ok(duration) => bench_success_res.pre_script_duration = duration,
-                Err(e) => {
-                    return Ok(QueryRevisionResult::PreScriptFailure(BenchFailureResult {
-                        revision_name: query_revision.name.clone(),
-                        error: e.to_string(),
-                    }));
-                }
-            };
+            bench_success_res.pre_script_duration = QBench::execute_script(pre_script, tx.clone())
+                .await
+                .map_err(|e| {
+                    e.context(format!(
+                        "Error executing Pre-Script for revision {}",
+                        query_revision.name
+                    ))
+                })?;
         }
 
         // Create a vector to store the durations of each iteration
@@ -316,26 +309,21 @@ impl QBench {
 
             // Lock the transaction and execute the query
             let mut lock = tx.lock().await;
-            let query_result = query(query_revision.query.as_str())
+            let _ = query(query_revision.query.as_str())
                 .execute(lock.deref_mut())
-                .await;
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "Error executing query for revision {}: {}",
+                        query_revision.name,
+                        e
+                    )
+                })?;
 
             // Release the lock
             lock.unlock();
 
-            // If the query was successful, push the duration to `durations`
-            // Otherwise, return a BenchFailureResult with the error message
-            match query_result {
-                Ok(_) => {
-                    durations.push(start.elapsed());
-                }
-                Err(e) => {
-                    return Ok(QueryRevisionResult::Failure(BenchFailureResult {
-                        revision_name: query_revision.name.clone(),
-                        error: e.to_string(),
-                    }));
-                }
-            };
+            durations.push(start.elapsed());
         }
 
         // Save the durations to `bench_success_res`
@@ -343,32 +331,30 @@ impl QBench {
 
         // Calculate the average duration and save it to `bench_success_res`
         let total = bench_success_res.durations.len() as f64;
-        bench_success_res.avg_duration = bench_success_res.durations.iter().sum::<Duration>().div_f64(total);
+        bench_success_res.avg_query_duration = bench_success_res
+            .durations
+            .iter()
+            .sum::<Duration>()
+            .div_f64(total);
 
         // If there is a post_script, execute it and measure its duration
         if let Some(post_script) = &query_revision.post_script {
-            let post_script_result = QBench::execute_script(post_script, tx.clone()).await;
-            match post_script_result {
-                Ok(duration) => bench_success_res.post_script_duration = duration,
-                Err(e) => {
-                    return Ok(QueryRevisionResult::PostScriptFailure(BenchFailureResult {
-                        revision_name: query_revision.name.clone(),
-                        error: e.to_string(),
-                    }));
-                }
-            };
+            bench_success_res.post_script_duration =
+                QBench::execute_script(post_script, tx.clone())
+                    .await
+                    .map_err(|e| {
+                        e.context(format!(
+                            "Error executing Post-Script for revision {}",
+                            query_revision.name
+                        ))
+                    })?;
         }
 
         // Rollback the transaction and return the successful result
-        Arc::try_unwrap(tx)
-            .unwrap()
-            .into_inner()
-            .rollback()
-            .await?;
+        Arc::try_unwrap(tx).unwrap().into_inner().rollback().await?;
 
-        Ok(QueryRevisionResult::Success(bench_success_res))
+        Ok(bench_success_res)
     }
-
 
     /// Executes a given SQL script in a transaction and returns the execution duration.
     ///
@@ -406,7 +392,10 @@ impl QBench {
     ///     Ok(())
     /// }
     /// ```
-    async fn execute_script(script: &str, tx: Arc<Mutex<Transaction<'_, Any>>>) -> Result<Duration> {
+    async fn execute_script(
+        script: &str,
+        tx: Arc<Mutex<Transaction<'_, Any>>>,
+    ) -> Result<Duration> {
         // Record the start time of the function execution.
         let start = Instant::now();
 
@@ -414,14 +403,13 @@ impl QBench {
         // lock.
         for script_line in extract_multiline_queries(script) {
             let mut lock = tx.lock().await;
-            let _ = query(script_line)
-                .execute(lock.deref_mut())
-                .await?;
+            let _ = query(script_line).execute(lock.deref_mut()).await?;
 
             // Unlock the transaction lock.
             lock.unlock();
         }
-
+        let mut lock = tx.lock().await;
+        lock.unlock();
         // Compute the duration of the function execution.
         let duration = start.elapsed();
 

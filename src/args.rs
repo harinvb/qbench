@@ -12,7 +12,11 @@ pub struct Args {
     /// A String representation of the database connection URL.
     /// This field can be set via the `-u` or `--url` command-line option
     /// and defaults to `postgres://user:password@localhost:5432/postgres`.
-    #[arg(short = 'u', long = "url", default_value = "postgres://user:password@localhost:5432/postgres")]
+    #[arg(
+        short = 'u',
+        long = "url",
+        default_value = "postgres://user:password@localhost:5432/postgres"
+    )]
     pub url: String,
 
     /// A PathBuf representation of the directory where the benchmark will be saved.

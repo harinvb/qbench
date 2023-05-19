@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{anyhow, Result};
 use tokio::fs::read_to_string;
 
-use crate::{QueryBenches, QueryBenchParser};
+use crate::{QueryBenchParser, QueryBenches};
 
 /// A parser for TOML files which implements the QueryBenchParser trait.
 #[derive(Debug, Default)]
@@ -20,8 +20,9 @@ impl TomlParser {
 impl QueryBenchParser for TomlParser {
     /// Parses a TOML file and returns a `QueryBenches` result.
     async fn parse(&self, path: &Path) -> Result<QueryBenches> {
-        let qb: QueryBenches = toml::from_str(read_to_string(path).await?.as_str()) // parse TOML string to QueryBenches object
-            .map_err(|_| anyhow!("Failed to parse toml file: {}", path.display()))?; // handle parsing error
+        let qb: QueryBenches =
+            toml::from_str(read_to_string(path).await?.as_str()) // parse TOML string to QueryBenches object
+                .map_err(|_| anyhow!("Failed to parse toml file: {}", path.display()))?; // handle parsing error
         Ok(qb)
     }
 }
