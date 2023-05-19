@@ -11,6 +11,7 @@ license = "MIT"
 [lib]
 name = "qbench"
 path = "src/lib.rs"
+doctest = false
 
 [[bin]]
 name = "qbench"
