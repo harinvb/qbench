@@ -1,38 +1,87 @@
-name: release
+name: QBench Release
+permissions:
+  contents: write
+  discussions: write
 
 on:
-  release:
-    types: [created]
-
+  push:
+    tags:
+      - "v*.*.*"
 jobs:
-  release:
-    name: publish ${{ matrix.name }}
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - target: x86_64-pc-windows-gnu
-            suffix: windows-x86_64
-            archive: zip
-            name: x86_64-pc-windows-gnu
-          - target: x86_64-unknown-linux-gnu
-            suffix: linux-x86_64
-            archive: tar.xz
-            name: x86_64-unknown-linux-gnu
-          - target: x86_64-apple-darwin
-            suffix: darwin-x86_64
-            archive: tar.gz
-            name: x86_64-apple-darwin
+  build-linux:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Clone repository
-        uses: actions/checkout@v2
-      - uses: xhaiker/rust-release.action@v1.0.0
-        name: build ${{ matrix.name }}
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install latest rust toolchain
+        uses: actions-rs/toolchain@v1
         with:
-          rust_target: ${{ matrix.target }}
-          archive_suffix: ${{ matrix.suffix }}
-          archive_types: ${{ matrix.archive }}
-          extra_files: "README.md LICENSE-MIT LICENSE-APACHE"
+          toolchain: stable
+          default: true
+          override: true
+
+      - name: Build
+        run: cargo build --all --release && strip target/release/PROJECT_NAME && mv target/release/PROJECT_NAME target/release/PROJECT_NAME_amd64
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            target/release/PROJECT_NAME_amd64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-win:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install latest rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          default: true
+          override: true
+
+      - name: Build
+        run: cargo build --all --release
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: target/release/PROJECT_NAME.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-mac:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install latest rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-apple-darwin
+          default: true
+          override: true
+
+      - name: Build for mac
+        run: cargo build --all --release && strip target/release/PROJECT_NAME && mv target/release/PROJECT_NAME target/release/PROJECT_NAME_darwin
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            target/release/PROJECT_NAME_darwin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
