@@ -25,9 +25,13 @@ Run this below command to benchmark the benchmark configurations in example fold
 ```bash
 cargo build && target\release\qbench -d example
 ```
-## Output
-### Benchmark Succeeded
-![results](example/results.gif)
-### Benchmark Failed
-![errors](example/errors.gif)
 
+## Output
+
+### Benchmark Succeeded
+
+![results](example/results.gif)
+
+### Benchmark Failed
+
+![errors](example/errors.gif)
