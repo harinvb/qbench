@@ -20,7 +20,12 @@ async fn main() -> Result<()> {
             term.write_line(&table.to_string())?;
         }
         Err(e) => {
-            term.write_line(style(format!("{:?}", e).as_str()).red().to_string().as_str())?;
+            term.write_line(
+                style(format!("{:?}", e).as_str())
+                    .red()
+                    .to_string()
+                    .as_str(),
+            )?;
         }
     }
     Ok(())
