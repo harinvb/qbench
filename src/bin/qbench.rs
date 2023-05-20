@@ -9,9 +9,10 @@ use qbench::bench::QBench;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
     let term = Term::stdout();
-    term.write_line("Running bench marks...")?;
-    let bench_res = QBench::new(Args::parse(), true).await?.run_bench().await;
+    term.write_line("Running benchmarks...")?;
+    let bench_res = QBench::new(args, true).await?.run_bench().await;
     term.clear_last_lines(1)?;
     match bench_res {
         Ok(bench_res) => {
