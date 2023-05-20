@@ -1,6 +1,6 @@
 [package]
 name = "qbench"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["HariBabu Nalluri <harinvb@gmail.com>"]
 description = """A simple query benchmarking tool for SQL databases,
