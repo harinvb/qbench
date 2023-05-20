@@ -8,7 +8,7 @@ use clap::Parser;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use glob::glob_with;
-use sqlx::any::AnyPoolOptions;
+use sqlx::any::{AnyPoolOptions};
 use sqlx::migrate::Migrate;
 use sqlx::{query, Any, AnyPool, Transaction};
 use tokio::sync::Mutex;
@@ -47,8 +47,8 @@ impl QBench {
         //Create a connection pool with maximum connections passed from args and connect to the database.
         let pool = AnyPoolOptions::new()
             .max_connections(args.max_connections)
-            .connect(&args.url)
-            .await?;
+            .acquire_timeout(Duration::from_secs(2))
+            .connect_lazy(&args.url)?;
         //Return a new instance of Self struct.
         Ok(Self {
             pool,
@@ -177,10 +177,18 @@ impl QBench {
         let glob_path = format!("{}/{}", dir, pattern);
 
         // Use `glob_with` to fetch all the files that match the pattern
-        Ok(glob_with(glob_path.as_ref(), glob_options)?
+        let files: Vec<PathBuf> = glob_with(glob_path.as_ref(), glob_options)?
             .flatten()
             .filter(|f| f.is_file())
-            .collect())
+            .collect();
+        if files.is_empty() {
+            return Err(anyhow!(
+                "No files found matching pattern: {} in directory {}",
+                pattern,
+                dir
+            ));
+        }
+        Ok(files)
     }
 
     /// Runs query benchmark for given QueryBench, running benchmarks for each revision of query.
