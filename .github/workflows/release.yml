@@ -8,101 +8,84 @@ on:
     tags:
       - v*.*.*
 
+
 jobs:
-  build-linux:
+  check-build:
+    name: Check build
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, x86_64-pc-windows-gnu]
+        platform: [ubuntu-latest]
+        include:
+          - target: x86_64-apple-darwin
+            platform: macos-latest
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v3
+      # - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+      #   name: Cargo Cache
+      #   with:
+      #     command: cache
+      - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+        name: Install Rustup
+        with:
+          command: install-rustup
+          toolchain: stable
+          target: ${{ matrix.target }}
+          profile: minimal
+          default: true
+      - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+        name: Cargo build
+        with:
+          command: cargo build
+          use-cross: true
+          args: --release --target=${{ matrix.target }}
+      - uses: actions/upload-artifact@v3.1.1
+        with:
+          name: qbench-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/qbench
+            target/${{ matrix.target }}/release/qbench.exe
+          if-no-files-found: error
+
+  cargo-test:
+    name: Cargo test
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Install latest rust toolchain
-        uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v3
+      # - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+      #   name: Cargo cache
+      #   with:
+      #     command: cache
+      - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+        name: Install Rustup
         with:
+          command: install-rustup
           toolchain: stable
+          profile: minimal
           default: true
-          override: true
-
-      - name: Test linux
-        run: cargo test --all --release
-
-      - name: Build for linux
-        run: cargo build --all --release && strip target/release/qbench
-
-      - name: Archive linux artifact
-        run: tar -czvf qbench-linux_amd64.tar.gz target/release/qbench
-
-      - name: Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
+      - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+        name: Run tests
         with:
-          files: |
-            qbench-linux_amd64.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          command: cargo test
 
-  build-win:
-    runs-on: windows-latest
-
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Install latest rust toolchain
-        uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v3
+      # - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+      #   name: Cargo cache
+      #   with:
+      #     command: cache
+      - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+        name: Install Rustup
         with:
-          toolchain: stable
-          default: true
-          override: true
-
-      - name: Test windows
-        run: cargo test --all --release
-
-      - name: Build for windows
-        run: cargo build --all --release
-
-      - name: Archive windows artifact
-        shell: pwsh
-        run: Compress-Archive -Path target/release/qbench.exe -DestinationPath qbench-windows_amd64.zip
-
-      - name: Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
+            command: install-rustup
+            toolchain: stable
+            components: clippy
+            default: true
+      - uses: FrancisRussell/ferrous-actions@v0.1.0-beta.2
+        name: Clippy
         with:
-          files: |
-            qbench-windows_amd64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-mac:
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Install latest rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-apple-darwin
-          default: true
-          override: true
-
-      - name: Test macos
-        run: cargo test --all --release
-
-      - name: Build for macos
-        run: cargo build --all --release && strip target/release/qbench
-
-      - name: Archive macos artifact
-        run: zip qbench-macos_amd64.zip target/release/qbench
-
-      - name: Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: |
-            qbench-macos_amd64.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          command: cargo clippy
