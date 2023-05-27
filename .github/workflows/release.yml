@@ -45,13 +45,15 @@ jobs:
         name: Strip binary & zip
         run: |
           strip target/${{ matrix.target }}/release/qbench.exe
-          7z a qbench-${{ matrix.target }}.zip target/${{ matrix.target }}/release/qbench.exe
+          cd target/${{ matrix.target }}/release
+          7z a ../../../qbench-${{ matrix.target }}.zip qbench.exe
 
       - if: ${{ matrix.platform != 'windows-latest' }}
         name: Strip binary & zip
         run: |
           strip target/${{ matrix.target }}/release/qbench
-          7z a qbench-${{ matrix.target }}.zip target/${{ matrix.target }}/release/qbench
+          cd target/${{ matrix.target }}/release
+          7z a -tzip ../../../qbench-${{ matrix.target }}.zip qbench
 
       - name: Release
         uses: softprops/action-gh-release@v1
