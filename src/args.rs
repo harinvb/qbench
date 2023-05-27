@@ -9,7 +9,7 @@ use clap::Parser;
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
 pub struct Args {
-    /// A String representation of the database connection URL.
+    ///The database connection URL.
     #[arg(
         short = 'u',
         long = "url",
@@ -17,21 +17,37 @@ pub struct Args {
     )]
     pub url: String,
 
-    /// A Path representation of the directory from where the benchmark config will be loaded.
+    /// Directory from where the benchmark config will be loaded.
     #[arg(short = 'd', long = "bench-dir", default_value = "./")]
     pub dir: PathBuf,
 
-    /// A String pattern that represents the file extension(s) to benchmark.
-    /// Currently only supports toml format.
-    #[arg(short = 'p', long = "pattern", default_value = "*.toml")]
-    pub pattern: String,
+    /// The config file filter.
+    /// Currently only supports parsing toml,json format.
+    #[arg(short = 'f', long = "filter", default_value = "*.toml")]
+    pub filter: String,
 
-    /// An unsigned 32-bit integer that represents the maximum number of connections.
-    #[arg(short = 'c', long = "max-connections", default_value = "10")]
+    /// The maximum number of connections.
+    #[arg(short = 'c', long = "max-connections", default_value = "100")]
     pub max_connections: u32,
 
-    /// An unsigned integer that represents the number of iterations to perform on
+    /// Number of iterations to perform on
     /// each revision.
     #[arg(short = 'i', long = "iterations", default_value = "1")]
     pub iterations: usize,
+
+    /// Specifies how to export (e.g. 'json', 'toml', 'none').
+    #[arg(short = 'e', long = "export", default_value = "none")]
+    pub export: String,
+
+    /// The output file.
+    #[arg(short = 'o', long = "out-file", default_value = "out")]
+    pub out_file: String,
+
+    /// The maximum time to wait for a database connection to be available.
+    #[arg(long = "connection-acquire-timeout", default_value = "180")]
+    pub connection_acquire_timeout: u64,
+
+    /// The maximum time to keep an idle database connection before closing it.
+    #[arg(long = "connection-idle-timeout", default_value = "180")]
+    pub connection_idle_timeout: u64,
 }

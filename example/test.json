@@ -1,0 +1,38 @@
+{
+  "queries": [
+    {
+      "name": "test1",
+      "revisions": [
+        {
+          "name": "1.0.0",
+          "query": "SELECT id,name FROM test where name like '%foo%';\n",
+          "pre_script": "CREATE TABLE test (id BIGSERIAL PRIMARY KEY, name TEXT);\nCREATE EXTENSION IF NOT EXISTS pgcrypto;\nINSERT INTO test (name) SELECT gen_random_uuid() from generate_series(1,100);\n",
+          "post_script": "DROP TABLE test;\n"
+        },
+        {
+          "name": "2.0.0",
+          "query": "SELECT id,name FROM test where name like '%foo%';",
+          "pre_script": "CREATE TABLE test (id BIGSERIAL PRIMARY KEY, name TEXT);\nCREATE EXTENSION IF NOT EXISTS pgcrypto;\nINSERT INTO test (name) SELECT gen_random_uuid() from generate_series(1,100);\nCREATE INDEX test_name_idx ON test (name);\n",
+          "post_script": "DROP TABLE test;"
+        }
+      ]
+    },
+    {
+      "name": "test2",
+      "revisions": [
+        {
+          "name": "1.0.0",
+          "query": "SELECT id,name FROM test where name like '%foo%';\n",
+          "pre_script": "CREATE TABLE test (id BIGSERIAL PRIMARY KEY, name TEXT);\nCREATE EXTENSION IF NOT EXISTS pgcrypto;\nINSERT INTO test (name) SELECT gen_random_uuid() from generate_series(1,100);\n",
+          "post_script": "DROP TABLE test;\n"
+        },
+        {
+          "name": "2.0.0",
+          "query": "SELECT id,name FROM test where name like '%foo%';",
+          "pre_script": "CREATE TABLE test (id BIGSERIAL PRIMARY KEY, name TEXT);\nCREATE EXTENSION IF NOT EXISTS pgcrypto;\nINSERT INTO test (name) SELECT gen_random_uuid() from generate_series(1,100);\nCREATE INDEX test_name_idx ON test (name);\n",
+          "post_script": "DROP TABLE test;"
+        }
+      ]
+    }
+  ]
+}

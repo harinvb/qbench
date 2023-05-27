@@ -25,8 +25,9 @@ clap = { version = "4.2.7", features = ["derive"] }
 console = { version = "0.15.6", features = ["windows-console-colors"] }
 futures = "0.3.28"
 glob = "0.3.1"
-humantime = "2.1.0"
 serde = { version = "1.0.163", features = ["derive"] }
+serde_json = "1.0.96"
+serde_with = "3.0.0"
 sqlx = { version = "0.6.3", features = ["runtime-tokio-rustls", "all-databases"] }
 tabled = { version = "0.12.0", features = ["color"] }
 thiserror = "1.0.40"

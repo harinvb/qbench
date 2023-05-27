@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,16 +7,16 @@ use clap::Parser;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use glob::glob_with;
-use sqlx::any::{AnyPoolOptions};
+use sqlx::{Any, AnyPool, query, Transaction};
+use sqlx::any::AnyPoolOptions;
 use sqlx::migrate::Migrate;
-use sqlx::{query, Any, AnyPool, Transaction};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
 
-use crate::args::Args;
-use crate::toml::TomlParser;
-use crate::util::extract_multiline_queries;
 use crate::{QueryBench, QueryBenchParser, QueryBenchResult, QueryRevision, QueryRevisionResult};
+use crate::args::Args;
+use crate::parser::DefaultParser;
+use crate::util::extract_multiline_queries;
 
 #[derive(Debug, Clone)]
 pub struct QBench {
@@ -47,7 +46,8 @@ impl QBench {
         //Create a connection pool with maximum connections passed from args and connect to the database.
         let pool = AnyPoolOptions::new()
             .max_connections(args.max_connections)
-            .acquire_timeout(Duration::from_secs(2))
+            .acquire_timeout(Duration::from_secs(args.connection_acquire_timeout))
+            .idle_timeout(Duration::from_secs(args.connection_idle_timeout))
             .connect_lazy(&args.url)?;
         //Return a new instance of Self struct.
         Ok(Self {
@@ -108,13 +108,13 @@ impl QBench {
         let files: Vec<PathBuf> = self.get_files_matching_pattern().await?;
 
         // Initialize parser
-        let parser = Arc::new(RefCell::from(TomlParser::new()));
+        let parser = Arc::new(DefaultParser::new());
 
         // Create a task for parsing each file
         let mut file_parsing_tasks = FuturesUnordered::new();
         for file in files {
             let parser = parser.clone();
-            file_parsing_tasks.push(async move { parser.borrow().parse(&file).await });
+            file_parsing_tasks.push(async move { parser.parse(&file).await });
         }
 
         // Combine queries from each parsed file
@@ -173,7 +173,7 @@ impl QBench {
         let dir = args.dir.to_str().unwrap_or("./");
 
         // Generate the glob pattern from the directory and file pattern
-        let pattern = args.pattern.clone();
+        let pattern = args.filter.clone();
         let glob_path = format!("{}/{}", dir, pattern);
 
         // Use `glob_with` to fetch all the files that match the pattern
